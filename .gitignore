@@ -45,3 +45,5 @@ STATO.md
 scratchpad/
 .DS_Store
 Thumbs.db
+
+.claude/

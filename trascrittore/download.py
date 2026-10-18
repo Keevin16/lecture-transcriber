@@ -55,6 +55,19 @@ def _scaricati_completi(work_dir: Path) -> list[Path]:
     return out
 
 
+def _e_cartella_dropbox(url: str) -> bool:
+    """True per un link a una CARTELLA Dropbox (/scl/fo/... o il vecchio /sh/...):
+    yt-dlp non ci trova un video e scarica la pagina web al suo posto."""
+    u = urlparse(url)
+    return "dropbox.com" in (u.netloc or "").lower() and u.path.startswith(("/scl/fo/", "/sh/"))
+
+
+def _audio_leggibile(p: Path) -> bool:
+    """True se ffprobe ci legge una durata: scarta una pagina HTML (o un .zip) che
+    yt-dlp ha salvato come 'scaricato.unknown_video' al posto del video."""
+    return audio.durata(p) > 0
+
+
 def e_webex(url: str) -> bool:
     try:
         return "webex.com" in (urlparse(url).netloc or "").lower()
@@ -191,8 +204,14 @@ def scarica(
     riceve 0..1 man mano che il download procede."""
     if not _url_valido(url):
         raise DownloadFallito("Link non valido: inserisci un indirizzo che inizia con http:// o https://.")
+    if _e_cartella_dropbox(url):
+        raise DownloadFallito(
+            "Questo è il link di una CARTELLA Dropbox: apri il video dentro la cartella, "
+            "copia il link di quel file (contiene /scl/fi/) e usa quello.")
     work_dir.mkdir(parents=True, exist_ok=True)
-    esistenti = _scaricati_completi(work_dir)
+    # Riuso solo un download che e' davvero audio/video: uno sbagliato (pagina web)
+    # verrebbe riusato a ogni ripresa, fallendo sempre allo stesso modo.
+    esistenti = [p for p in _scaricati_completi(work_dir) if _audio_leggibile(p)]
     if esistenti:
         reporter.log("Audio del link gia' scaricato, lo riuso")
         return esistenti[0]
@@ -290,6 +309,11 @@ def _esegui_download(
         else:
             msg = "Non sono riuscito a scaricare l'audio dal link (controlla il link e la connessione)."
         raise DownloadFallito(msg)
+    if not _audio_leggibile(files[0]):
+        files[0].unlink(missing_ok=True)
+        raise DownloadFallito(
+            "Dal link è arrivata una pagina web, non un video: usa il link diretto al "
+            "file (su Dropbox/Drive quello del singolo video, non della cartella).")
 
     avanzamento(1.0)
     return files[0]

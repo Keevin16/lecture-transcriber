@@ -7,6 +7,7 @@ genera_docx, valida_cookies, download .part, rilevamento lingua (campione).
 from __future__ import annotations
 
 import re
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -112,6 +113,13 @@ check("solo un .part -> nessun file completo", download._scaricati_completi(dtmp
 (dtmp / "scaricato.m4a").write_text("completo")
 done = download._scaricati_completi(dtmp)
 check("file completo riconosciuto, .part ignorato", len(done) == 1 and done[0].name == "scaricato.m4a")
+check("dropbox cartella /scl/fo/ riconosciuta",
+      download._e_cartella_dropbox("https://www.dropbox.com/scl/fo/abc/XYZ?rlkey=k&dl=0"))
+check("dropbox file /scl/fi/ NON e' cartella",
+      not download._e_cartella_dropbox("https://www.dropbox.com/scl/fi/abc/lez.mp4?rlkey=k&dl=0"))
+if shutil.which("ffprobe"):
+    (dtmp / "scaricato.unknown_video").write_text("<html>Dropbox</html>")
+    check("pagina HTML scaricata -> non e' audio", not download._audio_leggibile(dtmp / "scaricato.unknown_video"))
 
 print("\n#  rileva_lingua _campione_lingua (inizio + centro)")
 lungo = ("INIZIO " * 200) + ("CENTRO " * 200) + ("FINE " * 200)
