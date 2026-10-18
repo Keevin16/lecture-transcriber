@@ -353,6 +353,13 @@ def prepara_audio(
                     if sorgente is None:
                         raise FileNotFoundError("Nessuna sorgente audio: ne' file ne' link.")
                     reporter.log("🎛️  Estraggo l'audio (AAC mono 16 kHz)...")
+                    n = audio.estrai_blocchi(Path(sorgente), chunk_dir, inizio, minuti,
+                                             config.MAX_BLOCCO_MIN * 60)
+                    if n:
+                        reporter.log(f"✂️  {n} blocchi estratti in parallelo")
+                        avanzamento(0.95)
+                        break
+                    # Durata della sorgente non leggibile: estrazione intera + taglio a tempo fisso.
                     audio.estrai_audio(Path(sorgente), audio_file, inizio, minuti)
                     avanzamento(0.95)   # estrazione fatta (>0.9 del download: la barra non torna indietro)
                 # Blocchi bilanciati: numero minimo sotto il tetto, poi tutti ~uguali

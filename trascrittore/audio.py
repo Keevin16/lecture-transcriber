@@ -10,6 +10,8 @@ Cosi l'app funziona anche se lanciata senza "conda activate".
 """
 from __future__ import annotations
 
+import concurrent.futures
+import math
 import os
 import shutil
 import subprocess
@@ -74,6 +76,50 @@ def _verifica_ffmpeg() -> None:
             )
 
 
+# Formato dei blocchi mandati a Gemini: AAC mono 16 kHz, compatto per l'upload.
+_ARGS_AAC = ["-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "64k"]
+
+
+def estrai_blocchi(sorgente: Path, chunk_dir: Path, inizio_min: float, minuti: float | None,
+                   max_blocco_s: float) -> int:
+    """Estrae l'audio GIA' DIVISO in blocchi, un ffmpeg per blocco IN PARALLELO.
+
+    La conversione AAC e' single-thread: un ffmpeg per blocco usa tutti i core
+    (misurato su 90 min: 41s sequenziale -> 11s con 9 processi, 21s con 2). Blocchi
+    bilanciati come in segmenta: N = ceil(durata / max_blocco_s), tutti uguali.
+    Ritorna il numero di blocchi, o 0 se la durata della sorgente non e' leggibile
+    (chi chiama ripiega su estrai_audio + segmenta). Atomica come segmenta."""
+    _verifica_ffmpeg()
+    totale = durata(sorgente)
+    inizio = inizio_min * 60
+    fine = min(totale, inizio + minuti * 60) if minuti else totale
+    if fine - inizio <= 0:
+        return 0
+    n = max(1, math.ceil((fine - inizio) / max_blocco_s))
+    seg = (fine - inizio) / n
+    # Via i temporanei lasciati da un processo ucciso ("annulla tutto"): su una
+    # cartella di lavoro gira un solo esecutore alla volta (coda.attendi_pronta).
+    for vecchio in chunk_dir.parent.glob(f"{chunk_dir.name}.part*"):
+        shutil.rmtree(vecchio, ignore_errors=True)
+    tmp_dir = chunk_dir.with_name(f"{chunk_dir.name}.part{os.getpid()}")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    def blocco(i: int) -> None:
+        subprocess.run([_bin("ffmpeg"), "-y", "-loglevel", "error",
+                        "-ss", f"{inizio + i * seg:.3f}", "-t", f"{seg:.3f}", "-i", str(sorgente)]
+                       + _ARGS_AAC + [str(tmp_dir / f"part_{i:03d}.m4a")],
+                       check=True, creationflags=_NO_WINDOW)
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(n, os.cpu_count() or 2)) as ex:
+            list(ex.map(blocco, range(n)))      # rilancia il primo CalledProcessError
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+        os.replace(tmp_dir, chunk_dir)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    return n
+
+
 def estrai_audio(sorgente: Path, dest: Path, inizio_min: float = 0, minuti: float | None = None) -> None:
     """Estrae (ed eventualmente ritaglia) l'audio in AAC mono 16 kHz, compatto per l'upload.
 
@@ -95,7 +141,7 @@ def estrai_audio(sorgente: Path, dest: Path, inizio_min: float = 0, minuti: floa
     cmd += ["-i", str(sorgente)]
     if minuti:
         cmd += ["-t", str(int(minuti * 60))]
-    cmd += ["-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "64k", str(tmp)]
+    cmd += _ARGS_AAC + [str(tmp)]
     try:
         subprocess.run(cmd, check=True, creationflags=_NO_WINDOW)
         os.replace(tmp, dest)       # comparsa atomica di `dest`: o c'e' tutto, o niente

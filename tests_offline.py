@@ -294,5 +294,38 @@ from trascrittore.gemini import IMPOSTAZIONI_SICUREZZA
 check("4 categorie coperte", len(IMPOSTAZIONI_SICUREZZA) == 4)
 check("tutte BLOCK_NONE", all(str(s.threshold).endswith("BLOCK_NONE") for s in IMPOSTAZIONI_SICUREZZA))
 
+if shutil.which("ffmpeg"):
+    print("\n#  audio.estrai_blocchi: estrazione parallela a blocchi")
+    import subprocess
+    from trascrittore import audio
+    atmp = Path(tempfile.mkdtemp())
+
+    def _sorgente(nome, secondi, codec):
+        p = atmp / nome
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                        "sine=frequency=440:sample_rate=44100", "-ac", "2", "-t", str(secondi),
+                        "-c:a", codec, str(p)], check=True)
+        return p
+
+    def _durate(d):
+        return [audio.durata(p) for p in sorted(d.glob("part_*.m4a"))]
+
+    m4a = _sorgente("lez.m4a", 150, "aac")               # 150s, tetto 60s -> 3 blocchi da 50s
+    n = audio.estrai_blocchi(m4a, atmp / "c1", 0, None, 60)
+    d = _durate(atmp / "c1")
+    check("3 blocchi bilanciati", n == 3 and len(d) == 3 and all(abs(x - 50) < 0.5 for x in d))
+    check("durata totale conservata (niente buchi ai confini)", abs(sum(d) - 150) < 0.5)
+    check("niente cartella temporanea orfana", not list(atmp.glob("c1.part*")))
+    audio.estrai_blocchi(m4a, atmp / "c2", 0.5, 0.75, 60)  # clip: da 30s, per 45s
+    check("clip --start/--minutes -> 1 blocco da 45s", [round(x) for x in _durate(atmp / "c2")] == [45])
+    audio.estrai_blocchi(m4a, atmp / "c3", 2, 5, 60)     # clip oltre la fine: si ferma a 150s
+    check("clip oltre la fine -> tagliato alla durata reale", abs(sum(_durate(atmp / "c3")) - 30) < 0.5)
+    check("inizio oltre la fine -> 0 (ripiego)", audio.estrai_blocchi(m4a, atmp / "c4", 3, None, 60) == 0)
+    check("sorgente illeggibile -> 0 (ripiego)",
+          audio.estrai_blocchi(atmp / "non_esiste.mp4", atmp / "c5", 0, None, 60) == 0)
+    webm = _sorgente("lez.webm", 150, "libopus")        # formato tipico di YouTube (bestaudio)
+    audio.estrai_blocchi(webm, atmp / "c6", 0, None, 60)
+    check("webm/opus: seek corretto, durata conservata", abs(sum(_durate(atmp / "c6")) - 150) < 0.5)
+
 print(f"\n==== RISULTATO: {ok} PASS, {ko} FAIL ====")
 raise SystemExit(1 if ko else 0)
