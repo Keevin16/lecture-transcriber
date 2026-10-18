@@ -19,10 +19,10 @@ Word documents, via Google Gemini.
 ## Install
 
 ```bash
-pipx install git+https://github.com/GiorgioAlo/lecture-transcriber
+pipx install git+https://github.com/Keevin16/lecture-transcriber
 ```
 
-(`pip install git+https://github.com/GiorgioAlo/lecture-transcriber` also works;
+(`pip install git+https://github.com/Keevin16/lecture-transcriber` also works;
 `pipx` just keeps it isolated.) This creates the `transcribe` command.
 
 ## Set your API key

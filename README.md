@@ -36,7 +36,7 @@ On that page scroll down to **“Assets”** and download the file for your comp
 
 The simplest option if you don't want to download anything — it runs in your browser.
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/GiorgioAlo/lecture-transcriber/blob/main/notebooks/Trascrivi_Lezioni_Colab.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Keevin16/lecture-transcriber/blob/main/notebooks/Trascrivi_Lezioni_Colab.ipynb)
 
 Click the badge, then just follow the instructions written at the top of the notebook
 (get a key, upload your lectures or paste links, press play). No coding needed.
