@@ -34,6 +34,10 @@ TRANSCRIBE_MODEL = "gemini-3.5-transcribe"        # trascrizione DEDICATA: usata
 TEXT_MODEL = "gemini-3.1-flash-lite"              # pulizia + traduzione del testo (versione GA/stabile:
 #   era "...-preview", spostato alla GA il 2026-10-16 per non dipendere da un modello preview che Google
 #   depriorizza nelle giornate di carico. NON tocca la fedelta' della TRASCRIZIONE (ASR_MODEL a parte).
+# Motore ALTERNATIVO per la FASE 1, solo con una GPU CUDA (es. Colab T4): faster-whisper
+# in locale, niente quota/503 e l'audio non va a Google. Si sceglie con Job.motore_asr;
+# senza GPU (o senza il pacchetto 'faster-whisper') la pipeline ripiega su ASR_MODEL.
+WHISPER_MODEL = "large-v3-turbo"
 # Tetto di token in USCITA per pulizia/traduzione. Va alzato: col default
 # (~8K token) un blocco grande verrebbe TRONCATO a meta' output (sembra un
 # riassunto ma e' un taglio tecnico). Misurato: a blocchi grandi flash-lite

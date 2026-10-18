@@ -21,6 +21,7 @@ gia fatti. Il testo torna nella LINGUA PARLATA (nessuna traduzione qui).
 from __future__ import annotations
 
 import concurrent.futures
+import functools
 import math
 import re
 import shutil
@@ -470,3 +471,80 @@ def trascrivi_chunks(
         ex.shutdown(wait=False, cancel_futures=True)
 
     return "\n".join(parti[i] for i in sorted(parti) if parti[i])
+
+
+# =====================================================================
+# Motore alternativo: Whisper locale su GPU (es. Colab T4)
+# =====================================================================
+# faster-whisper gestisce da solo l'audio lungo: niente blocchi, upload o guardia
+# per-blocco. Il filtro VAD salta i silenzi (la causa tipica delle allucinazioni di
+# Whisper) e condition_on_previous_text=False evita che un errore si propaghi in loop.
+
+_SR_WHISPER = 16000   # Whisper lavora a 16 kHz mono
+
+
+@functools.lru_cache(maxsize=1)
+def modello_whisper():
+    """Carica il modello UNA volta per processo (~1,5 GB): le lezioni successive lo
+    riusano. Senza pacchetto o senza GPU solleva -> la pipeline ripiega su Gemini
+    (un'eccezione non viene messa in cache: al giro dopo si riprova)."""
+    import ctranslate2
+    from faster_whisper import WhisperModel
+    if ctranslate2.get_cuda_device_count() == 0:
+        raise RuntimeError("nessuna GPU CUDA")
+    return WhisperModel(config.WHISPER_MODEL, device="cuda", compute_type="float16")
+
+
+def _decodifica(path: Path):
+    """Audio del file come array float32 a 16 kHz mono (PyAV, gia' dentro faster-whisper)."""
+    from faster_whisper import decode_audio
+    return decode_audio(str(path), sampling_rate=_SR_WHISPER)
+
+
+def audio_whisper(
+    sorgente: Path | None,
+    work_dir: Path,
+    inizio: float,
+    minuti: float | None,
+    reporter: Reporter,
+    url: str | None = None,
+    cookies: str | None = None,
+    password: str | None = None,
+    avanzamento=lambda fr: None,
+):
+    """FASE 0 per Whisper: scarica (se link) e decodifica in memoria, ritagliando la clip."""
+    # ponytail: audio intero in RAM (~3,8 MB/min, 3h = ~700 MB): ok su Colab (12 GB);
+    # per lezioni molto piu' lunghe passare a decodifica a finestre.
+    if url:
+        from . import download
+        sorgente = download.scarica(url, work_dir, cookies, password, reporter,
+                                    avanzamento=lambda fr: avanzamento(0.9 * fr))
+    if sorgente is None:
+        raise FileNotFoundError("Nessuna sorgente audio: ne' file ne' link.")
+    reporter.log("🎛️  Decodifico l'audio per Whisper...")
+    campioni = _decodifica(Path(sorgente))
+    a = int(inizio * 60 * _SR_WHISPER)
+    b = a + int(minuti * 60 * _SR_WHISPER) if minuti else None
+    campioni = campioni[a:b]
+    if len(campioni) == 0:
+        raise RuntimeError("Non sono riuscito a ricavare l'audio: il file sembra vuoto o danneggiato.")
+    avanzamento(1.0)
+    return campioni
+
+
+def trascrivi_whisper(modello, campioni, reporter: Reporter, avanzamento=lambda fr: None) -> str:
+    """FASE 1 con Whisper: un segmento per riga (il reflow del Word li ricuce)."""
+    durata_s = len(campioni) / _SR_WHISPER
+    reporter.log(f"🎙️  Trascrivo con Whisper ({config.WHISPER_MODEL}, GPU), ~{durata_s / 60:.0f} min...")
+    segmenti, _info = modello.transcribe(campioni, beam_size=5, vad_filter=True,
+                                         condition_on_previous_text=False)
+    righe = []
+    for s in segmenti:          # generatore: la trascrizione avanza mentre lo leggo
+        if reporter.interrotto():
+            raise Interrotto()
+        if s.text.strip():
+            righe.append(s.text.strip())
+        avanzamento(min(1.0, s.end / max(durata_s, 1.0)))
+    if not righe:
+        raise RuntimeError("Whisper non ha trascritto nulla")
+    return "\n".join(righe)

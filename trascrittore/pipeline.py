@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config, documents, languages, textproc, transcribe, util
-from .errors import Interrotto
+from .errors import DownloadFallito, Interrotto
 from .gemini import crea_client, _attendi_annullabile
 from .progress import Reporter
 
@@ -68,6 +68,7 @@ class Job:
     url: str | None = None             # link da scaricare (YouTube, Webex...) invece di un file
     cookies: str | None = None         # file cookies.txt (per Webex), tenuto solo in RAM
     password: str | None = None        # password del video (Webex), facoltativa
+    motore_asr: str = "gemini"         # "gemini" | "whisper" (GPU locale, ripiega su gemini)
 
 
 @dataclass
@@ -110,25 +111,53 @@ def fase_trascrizione(job: Job, client, reporter: Reporter, work_dir: Path, rifa
         raw = grezza.read_text(encoding="utf-8")
         reporter.avanzamento(_pct(1))
     else:
-        reporter.fase(0, "attiva")
-        chunks = transcribe.prepara_audio(
-            job.sorgente, work_dir, job.inizio, job.minuti, reporter,
-            url=job.url, cookies=job.cookies, password=job.password,
-            avanzamento=lambda fr: reporter.avanzamento(_pct(0, fr)),
-        )
-        reporter.fase(0, "fatta"); reporter.avanzamento(_pct(0))
-        stop_se_annullato()
+        raw = None
+        if job.motore_asr == "whisper":
+            try:
+                raw = _trascrivi_whisper(job, reporter, work_dir)
+            except (Interrotto, DownloadFallito):
+                raise                   # con Gemini fallirebbe allo stesso modo
+            except Exception as e:      # niente GPU / pacchetto / CUDA: ripiego, non fallisco
+                reporter.log(f"⚠️  Whisper non disponibile ({e}): trascrivo con Gemini")
+                job.motore_asr = "gemini"
+        if raw is None:
+            reporter.fase(0, "attiva")
+            chunks = transcribe.prepara_audio(
+                job.sorgente, work_dir, job.inizio, job.minuti, reporter,
+                url=job.url, cookies=job.cookies, password=job.password,
+                avanzamento=lambda fr: reporter.avanzamento(_pct(0, fr)),
+            )
+            reporter.fase(0, "fatta"); reporter.avanzamento(_pct(0))
+            stop_se_annullato()
 
-        reporter.fase(1, "attiva")
-        raw = transcribe.trascrivi_chunks(
-            client, chunks, work_dir, reporter,
-            avanzamento=lambda fr: reporter.avanzamento(_pct(1, fr)),
-        )
+            reporter.fase(1, "attiva")
+            raw = transcribe.trascrivi_chunks(
+                client, chunks, work_dir, reporter,
+                avanzamento=lambda fr: reporter.avanzamento(_pct(1, fr)),
+            )
         util.scrivi_testo(grezza, raw)
         reporter.fase(1, "fatta")
     reporter.log(f"{len(raw.split())} parole trascritte")
     stop_se_annullato()
     return raw
+
+
+def _trascrivi_whisper(job: Job, reporter: Reporter, work_dir: Path) -> str:
+    """FASI 0-1 con Whisper su GPU: audio in memoria (niente blocchi) + trascrizione.
+    Il modello si carica PRIMA del download: senza GPU si ripiega subito su Gemini."""
+    modello = transcribe.modello_whisper()
+    reporter.fase(0, "attiva")
+    campioni = transcribe.audio_whisper(
+        job.sorgente, work_dir, job.inizio, job.minuti, reporter,
+        url=job.url, cookies=job.cookies, password=job.password,
+        avanzamento=lambda fr: reporter.avanzamento(_pct(0, fr)),
+    )
+    reporter.fase(0, "fatta"); reporter.avanzamento(_pct(0))
+    reporter.fase(1, "attiva")
+    return transcribe.trascrivi_whisper(
+        modello, campioni, reporter,
+        avanzamento=lambda fr: reporter.avanzamento(_pct(1, fr)),
+    )
 
 
 def fase_testo(job: Job, client, reporter: Reporter, work_dir: Path, raw: str, rifai: bool = False) -> Risultato:
@@ -221,7 +250,9 @@ def fase_testo(job: Job, client, reporter: Reporter, work_dir: Path, raw: str, r
 
     # ---- FASE 4: documenti Word ----
     reporter.fase(4, "attiva")
-    fonte = "trascrizione fornita" if job.testo else config.ASR_MODEL
+    fonte = ("trascrizione fornita" if job.testo
+             else f"Whisper ({config.WHISPER_MODEL})" if job.motore_asr == "whisper"
+             else config.ASR_MODEL)
     nota = f"Trascrizione: {fonte} | Pulizia e traduzione: Gemini ({config.TEXT_MODEL})"
     if job.corso:
         nota = f"Corso: {job.corso} | " + nota

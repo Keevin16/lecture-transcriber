@@ -21,6 +21,10 @@ dependencies = [
     "yt-dlp>=2025.1.1",
 ]
 
+[project.optional-dependencies]
+# Trascrizione locale su GPU CUDA (Colab T4): `pip install "lecture-transcriber[whisper] @ git+..."`.
+whisper = ["faster-whisper>=1.1"]
+
 [project.urls]
 Homepage = "https://github.com/GiorgioAlo/lecture-transcriber"
 Issues = "https://github.com/GiorgioAlo/lecture-transcriber/issues"

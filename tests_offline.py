@@ -294,6 +294,83 @@ from trascrittore.gemini import IMPOSTAZIONI_SICUREZZA
 check("4 categorie coperte", len(IMPOSTAZIONI_SICUREZZA) == 4)
 check("tutte BLOCK_NONE", all(str(s.threshold).endswith("BLOCK_NONE") for s in IMPOSTAZIONI_SICUREZZA))
 
+print("\n#  Whisper (GPU): motore, clip e ripiego su Gemini — con modello FINTO, niente GPU")
+from types import SimpleNamespace
+from trascrittore import pipeline
+from trascrittore.errors import DownloadFallito, Interrotto
+from trascrittore.progress import Reporter
+
+class _ModelloFinto:
+    def __init__(self, testi):
+        self.testi = testi
+    def transcribe(self, campioni, **kw):
+        self.kw = kw
+        segs = (SimpleNamespace(text=t, end=(i + 1) * 10.0) for i, t in enumerate(self.testi))
+        return segs, None
+
+class _RepAnnullato(Reporter):
+    def interrotto(self):
+        return True
+
+sr = transcribe._SR_WHISPER
+fr = []
+mf = _ModelloFinto([" Buongiorno a tutti.", "   ", " Oggi parliamo di reti."])
+out = transcribe.trascrivi_whisper(mf, [0.0] * (sr * 30), Reporter(), avanzamento=fr.append)
+check("whisper: un segmento per riga, vuoti scartati", out == "Buongiorno a tutti.\nOggi parliamo di reti.")
+check("whisper: VAD attivo e niente condizionamento (anti-loop)",
+      mf.kw.get("vad_filter") is True and mf.kw.get("condition_on_previous_text") is False)
+check("whisper: avanzamento arriva a 1.0", fr and fr[-1] == 1.0)
+try:
+    transcribe.trascrivi_whisper(_ModelloFinto(["  "]), [0.0] * sr, Reporter()); check("whisper vuoto -> errore", False)
+except RuntimeError:
+    check("whisper vuoto -> errore (fa scattare il ripiego)", True)
+try:
+    transcribe.trascrivi_whisper(_ModelloFinto(["a", "b"]), [0.0] * sr, _RepAnnullato()); check("annullo", False)
+except Interrotto:
+    check("whisper: annullo onorato tra i segmenti", True)
+
+_dec_orig = transcribe._decodifica
+transcribe._decodifica = lambda p: list(range(sr * 120))            # 2 min di "audio"
+wt = Path(tempfile.mkdtemp())
+clip = transcribe.audio_whisper(wt / "x.mp4", wt, 0.5, 0.25, Reporter())
+check("whisper: clip --start/--minutes (da 30s per 15s)", len(clip) == sr * 15 and clip[0] == sr * 30)
+check("whisper: senza clip = tutto l'audio", len(transcribe.audio_whisper(wt / "x.mp4", wt, 0, None, Reporter())) == sr * 120)
+try:
+    transcribe.audio_whisper(wt / "x.mp4", wt, 5, None, Reporter()); check("inizio oltre la fine", False)
+except RuntimeError:
+    check("whisper: inizio oltre la fine -> errore chiaro", True)
+transcribe._decodifica = _dec_orig
+
+_orig = (transcribe.modello_whisper, transcribe.audio_whisper, transcribe.prepara_audio, transcribe.trascrivi_chunks)
+transcribe.prepara_audio = lambda *a, **k: ["blocco"]
+transcribe.trascrivi_chunks = lambda *a, **k: "testo da gemini"
+
+def _senza_gpu():
+    raise RuntimeError("nessuna GPU CUDA")
+
+transcribe.modello_whisper = _senza_gpu
+job = Job(sorgente=wt / "x.mp4", nome="w1", motore_asr="whisper")
+raw = pipeline.fase_trascrizione(job, None, Reporter(), wt / "w1")
+check("senza GPU -> ripiego su Gemini", raw == "testo da gemini" and job.motore_asr == "gemini")
+
+transcribe.modello_whisper = lambda: _ModelloFinto(["dal modello whisper"])
+transcribe.audio_whisper = lambda *a, **k: [0.0] * sr
+job = Job(sorgente=wt / "x.mp4", nome="w2", motore_asr="whisper")
+raw = pipeline.fase_trascrizione(job, None, Reporter(), wt / "w2")
+check("con GPU -> testo di Whisper, salvato in grezza.txt",
+      raw == "dal modello whisper" and (wt / "w2" / "grezza.txt").read_text(encoding="utf-8") == raw)
+
+def _download_ko(*a, **k):
+    raise DownloadFallito("link rotto")
+
+transcribe.audio_whisper = _download_ko
+try:
+    pipeline.fase_trascrizione(Job(url="https://x.y/v", nome="w3", motore_asr="whisper"), None, Reporter(), wt / "w3")
+    check("download fallito", False)
+except DownloadFallito:
+    check("whisper: download fallito NON ripiega su Gemini (fallirebbe uguale)", True)
+transcribe.modello_whisper, transcribe.audio_whisper, transcribe.prepara_audio, transcribe.trascrivi_chunks = _orig
+
 if shutil.which("ffmpeg"):
     print("\n#  audio.estrai_blocchi: estrazione parallela a blocchi")
     import subprocess
